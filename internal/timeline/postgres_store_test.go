@@ -1143,3 +1143,92 @@ func TestPostgresStore_ColumnRoundTrip(t *testing.T) {
 	}
 	assert("Query", &events[0])
 }
+
+// TestPostgresStore_SeenWritesPersistAsynchronously covers the batched writer.
+// MarkResourceSeen updates the in-memory set and queues the durable write, so
+// the properties that matter are that the row is still there for the next
+// process to hydrate, and that a clear can never be applied before the mark it
+// supersedes.
+func TestPostgresStore_SeenWritesPersistAsynchronously(t *testing.T) {
+	dsn := testPostgresDSN(t)
+	store, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+
+	const n = 1200 // more than one batch
+	for i := 0; i < n; i++ {
+		store.MarkResourceSeen("cluster-a", "Deployment", "default", fmt.Sprintf("app-%d", i))
+	}
+	// A mark immediately followed by a clear must not resurrect the row.
+	store.MarkResourceSeen("cluster-a", "Deployment", "default", "transient")
+	store.ClearResourceSeen("cluster-a", "Deployment", "default", "transient")
+
+	// Close drains the queue; nothing here should depend on the flush interval.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close reopened: %v", err)
+		}
+	})
+
+	for _, i := range []int{0, n / 2, n - 1} {
+		if !reopened.IsResourceSeen("cluster-a", "Deployment", "default", fmt.Sprintf("app-%d", i)) {
+			t.Errorf("app-%d not persisted across restart", i)
+		}
+	}
+	if reopened.IsResourceSeen("cluster-a", "Deployment", "default", "transient") {
+		t.Error("cleared resource came back after restart: the clear was applied before its mark")
+	}
+	if reopened.IsResourceSeen("cluster-b", "Deployment", "default", "app-0") {
+		t.Error("seen state leaked across cluster contexts")
+	}
+}
+
+// TestPostgresStore_ClearSurvivesQueuePressure pins the durability of a clear
+// when the write queue is saturated. Marks may be dropped under pressure - the
+// in-memory set is already correct and the cost is one re-report after a
+// restart - but a dropped clear is not equivalent: it returns with the row
+// still present, a queued mark for the same key can flush on top of it, and the
+// resource then stays marked as seen so its next appearance is suppressed.
+func TestPostgresStore_ClearSurvivesQueuePressure(t *testing.T) {
+	dsn := testPostgresDSN(t)
+	store, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+
+	// Saturate the queue well past its depth, with the key under test marked
+	// part-way through so a queued mark for it is in flight behind the clear.
+	for i := 0; i < seenWriteQueueDepth*3; i++ {
+		store.MarkResourceSeen("cluster-a", "Deployment", "default", fmt.Sprintf("noise-%d", i))
+		if i == seenWriteQueueDepth {
+			store.MarkResourceSeen("cluster-a", "Deployment", "default", "recreated")
+		}
+	}
+	store.ClearResourceSeen("cluster-a", "Deployment", "default", "recreated")
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close reopened: %v", err)
+		}
+	})
+	if reopened.IsResourceSeen("cluster-a", "Deployment", "default", "recreated") {
+		t.Fatal("clear was lost under queue pressure: the resource is still marked seen after restart")
+	}
+}
