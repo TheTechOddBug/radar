@@ -16,8 +16,13 @@ import {
   Copy,
   Check,
   Plus,
+  Link,
+  Lock,
+  Users,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Badge } from "@skyhook-io/k8s-ui/components/ui/Badge";
 import {
   useDiagnose,
   useDiagnoseLayout,
@@ -31,7 +36,11 @@ import { RecentList } from "./Home";
 import { AgentSetupNotice } from "./AgentSetupNotice";
 import { ConsentCard } from "./parts";
 import { buildLaunchCommand, launchAgentLabel, openInTerminal } from "./launch";
-import { type RunSummary, type ExecutionProfile } from "../../api/diagnose";
+import {
+  updateRunVisibility,
+  type RunSummary,
+  type ExecutionProfile,
+} from "../../api/diagnose";
 import { routePath } from "../../api/config";
 import { useCapabilitiesContext } from "../../contexts/CapabilitiesContext";
 
@@ -71,7 +80,10 @@ function InvestigationMenu({ run }: { run: RunSummary }) {
   const [copied, setCopied] = useState(false);
   const { localTerminal } = useCapabilitiesContext();
   const label = launchAgentLabel(run);
-  const command = buildLaunchCommand(run, `${window.location.origin}${routePath('/mcp')}`);
+  const command = buildLaunchCommand(
+    run,
+    `${window.location.origin}${routePath("/mcp")}`,
+  );
   // No resumable session yet (or stale run) → nothing to hand off.
   if (!command) return null;
 
@@ -143,6 +155,132 @@ function InvestigationMenu({ run }: { run: RunSummary }) {
   );
 }
 
+export function canCopyRunLink(
+  run: RunSummary | null | undefined,
+): run is RunSummary & { radarUrl: string } {
+  return typeof run?.radarUrl === "string" && run.radarUrl.length > 0;
+}
+
+function CopyRunLink({ radarUrl }: { radarUrl: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(
+        new URL(radarUrl, window.location.origin).href,
+      );
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+    setTimeout(() => setCopyState("idle"), 1500);
+  };
+  return (
+    <Tooltip
+      content={
+        copyState === "copied"
+          ? "Link copied"
+          : copyState === "error"
+            ? "Couldn’t copy link"
+            : "Copy investigation link"
+      }
+      position="bottom"
+    >
+      <button
+        onClick={copy}
+        className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
+        aria-label="Copy investigation link"
+      >
+        {copyState === "copied" ? (
+          <Check className="h-4 w-4 text-emerald-500" />
+        ) : (
+          <Link className="h-4 w-4" />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+function VisibilityControl({
+  run,
+  onChanged,
+}: {
+  run: RunSummary;
+  onChanged: (run: RunSummary) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  const [confirmShare, setConfirmShare] = useState(false);
+  if (!run.canManageVisibility) {
+    return run.visibility === "organization" ? (
+      <Tooltip content="Shared with your organization" position="bottom">
+        <Badge severity="neutral" size="sm" className="shrink-0">
+          <Users className="h-3 w-3" />
+          Organization
+        </Badge>
+      </Tooltip>
+    ) : null;
+  }
+  const shared = run.visibility === "organization";
+  const update = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(false);
+    updateRunVisibility(run.id, shared ? "private" : "organization")
+      .then((updated) => {
+        onChanged(updated);
+        setConfirmShare(false);
+      })
+      .catch(() => setError(true))
+      .finally(() => setBusy(false));
+  };
+  const label = shared ? "Organization" : "Private";
+  return (
+    <>
+      <Tooltip
+        content={
+          error
+            ? "Couldn't change sharing"
+            : shared
+              ? "Shared with your organization — make private"
+              : "Private — click to let organization members access this investigation"
+        }
+        position="bottom"
+      >
+        <button
+          onClick={() => (shared ? update() : setConfirmShare(true))}
+          disabled={busy}
+          className="flex items-center gap-1 rounded-md border border-theme-border/70 px-1.5 py-1 text-[11px] font-medium text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary disabled:opacity-50"
+          aria-label={
+            shared
+              ? "Shared with your organization — make private"
+              : "Private — click to let organization members access this investigation"
+          }
+        >
+          {shared ? (
+            <Users className="h-3.5 w-3.5" />
+          ) : (
+            <Lock className="h-3.5 w-3.5" />
+          )}
+          {label}
+        </button>
+      </Tooltip>
+      <ConfirmDialog
+        open={confirmShare}
+        onClose={() => !busy && setConfirmShare(false)}
+        onConfirm={update}
+        title="Share this investigation?"
+        message="Everyone in your organization can read this entire investigation—including your questions and the logs and manifests Radar read—and can continue or stop it."
+        confirmLabel="Share with organization"
+        variant="warning"
+        isLoading={busy}
+      />
+    </>
+  );
+}
+
 // The panel is an ABSOLUTE slot inside the app's body frame (the column under the
 // header, right of the nav rail) — App renders it there and passes topInset (the
 // header height; 0 in chromeless embeds). It shares that frame with the resource/
@@ -154,8 +292,9 @@ function InvestigationMenu({ run }: { run: RunSummary }) {
 //                 the last focused run. Without this the button dispatches an
 //                 agent — real tokens — from a screen showing an unrelated list.
 //   run           nothing to take a resource from.
-//   running       a start is handed back the live run, so the click does nothing
-//                 and the button reads as broken.
+//   running/stopping a human start is handed back the live run, so the click does
+//                 nothing. An automatic run is a different, immutable session,
+//                 so it deliberately keeps the fresh human escape hatch.
 //   stale         the body already offers "Re-run on current cluster" WITH the
 //                 warning that the context changed; a bare + carries none of it,
 //                 and the resource may not exist in the context it'd run against.
@@ -168,7 +307,8 @@ export function canStartNewInvestigation(
   return (
     view === "investigation" &&
     !!run &&
-    run.status !== "running" &&
+    ((run.status !== "running" && run.status !== "stopping") ||
+      run.trigger === "background") &&
     run.status !== "stale" &&
     !needsConsent
   );
@@ -220,23 +360,28 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
     d.setupState === "needs-install" || d.setupState === "needs-restart";
 
   const activeRun = d.runs.find((r) => r.id === d.activeRunId) ?? null;
+  // Docked Home is a list, not the previously focused run. Scope every header
+  // label/action to what is visibly on screen so Copy/Share cannot act on a run
+  // the user has navigated away from. Expanded mode remains master-detail and
+  // therefore keeps the selected run active beside its history list.
+  const headerRun = !maximized && d.view === "home" ? null : activeRun;
   // A focused run shows the agent it actually ran with; Home reflects the current pick.
-  const activeAgentLabel = activeRun?.agent
-    ? agentLabelFor(activeRun.agent)
+  const activeAgentLabel = headerRun?.agent
+    ? agentLabelFor(headerRun.agent)
     : d.agentLabel;
   // Header subtitle: the config a focused run actually used (it records agent /
   // profile / model / effort), or the current defaults on Home. Codex shows mode
   // + reasoning effort; model is shown only when overridden. Clicking opens Settings.
   const configLine = buildConfigLine(
-    activeRun ?? {
+    headerRun ?? {
       agent: d.selectedAgent,
       profile: d.hosted ? undefined : d.profile,
       model: d.model,
       effort: d.effort,
     },
   );
-  const detailTitle = activeRun
-    ? `${activeRun.kind} ${activeRun.namespace ? `${activeRun.namespace}/` : ""}${activeRun.name}`
+  const detailTitle = headerRun
+    ? `${headerRun.kind} ${headerRun.namespace ? `${headerRun.namespace}/` : ""}${headerRun.name}`
     : "AI investigations";
 
   // Absolute within the body frame: maximized fills it; docked is a right slot.
@@ -375,27 +520,36 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {activeRun &&
-            canStartNewInvestigation(d.view, activeRun, d.needsConsent) && (
-            <Tooltip content="New investigation on this resource" position="bottom">
-              <button
-                onClick={() =>
-                  d.openInvestigation({
-                    kind: activeRun.kind,
-                    namespace: activeRun.namespace,
-                    name: activeRun.name,
-                    issueId: activeRun.issueId,
-                    fresh: true,
-                  })
-                }
-                className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
-                aria-label="New investigation on this resource"
+          {headerRun &&
+            canStartNewInvestigation(d.view, headerRun, d.needsConsent) && (
+              <Tooltip
+                content="New investigation on this resource"
+                position="bottom"
               >
-                <Plus className="h-4 w-4" />
-              </button>
-            </Tooltip>
+                <button
+                  onClick={() =>
+                    d.openInvestigation({
+                      kind: headerRun.kind,
+                      namespace: headerRun.namespace,
+                      name: headerRun.name,
+                      issueId: headerRun.issueId,
+                      fresh: true,
+                    })
+                  }
+                  className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
+                  aria-label="New investigation on this resource"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </Tooltip>
+            )}
+          {headerRun && (
+            <VisibilityControl run={headerRun} onChanged={d.updateRunSummary} />
           )}
-          {activeRun && <InvestigationMenu run={activeRun} />}
+          {canCopyRunLink(headerRun) && (
+            <CopyRunLink radarUrl={headerRun.radarUrl} />
+          )}
+          {headerRun && <InvestigationMenu run={headerRun} />}
           <Tooltip content={maximized ? "Restore" : "Expand"} position="bottom">
             <button
               onClick={() => setMaximized((v) => !v)}
