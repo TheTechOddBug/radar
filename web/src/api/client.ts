@@ -6773,6 +6773,8 @@ export function useImageFilesystem(
 // Response from workload pods endpoint
 export interface WorkloadPodsResponse {
   pods: WorkloadPodInfo[];
+  total: number;
+  truncated: boolean;
 }
 
 // Response from workload logs endpoint (non-streaming)
@@ -6790,10 +6792,12 @@ export interface WorkloadLogsResponse {
 }
 
 export interface WorkloadRun {
+  group: string;
   kind: string;
   namespace: string;
   name: string;
   phase: string;
+  deleting?: boolean;
   active: boolean;
   startedAt?: string;
   finishedAt?: string;
@@ -6807,6 +6811,7 @@ export interface WorkloadRun {
   parallelism?: number;
   progress?: string;
   template?: string;
+  jobset?: JobSetMember;
   launcher?: {
     kind: string;
     namespace?: string;
@@ -6820,17 +6825,42 @@ export interface WorkloadRun {
   podPending?: number;
 }
 
+export interface JobSetMember {
+  replicatedJob?: string;
+  replicatedJobReplicas?: string;
+  jobIndex?: string;
+  globalReplicas?: string;
+  globalIndex?: string;
+  groupName?: string;
+  groupReplicas?: string;
+  groupIndex?: string;
+  restartAttempt?: string;
+  jobRestartAttempt?: string;
+}
+
 export interface WorkloadRunsResponse {
+  collection: "runs" | "members";
   runs: WorkloadRun[];
+  total: number;
+  truncated: boolean;
 }
 
 // Fetch pods for a workload
-export function useWorkloadPods(kind: string, namespace: string, name: string) {
+export function useWorkloadPods(
+  kind: string,
+  namespace: string,
+  name: string,
+  options?: { limit?: number; refetchInterval?: number | false },
+) {
+  const limit = options?.limit;
+  const queryString = limit ? `?limit=${limit}` : "";
   return useQuery<WorkloadPodsResponse>({
-    queryKey: ["workload-pods", kind, namespace, name],
-    queryFn: () => fetchJSON(`/workloads/${kind}/${namespace}/${name}/pods`),
+    queryKey: ["workload-pods", kind, namespace, name, limit ?? 0],
+    queryFn: () =>
+      fetchJSON(`/workloads/${kind}/${namespace}/${name}/pods${queryString}`),
     enabled: Boolean(kind && namespace && name),
     staleTime: 10000, // 10 seconds - pods can change
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 

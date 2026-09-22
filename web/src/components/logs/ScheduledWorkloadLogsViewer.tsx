@@ -3,7 +3,7 @@ import { Loader2, Terminal } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useWorkloadRuns, type WorkloadRun } from '../../api/client'
 import { WorkloadLogsViewer } from './WorkloadLogsViewer'
-import { pickDefaultRun, workloadRunKey } from '../execution/BatchExecutionView'
+import { pickDefaultRun, selectedRunMissing, workloadRunKey } from '../execution/BatchExecutionView'
 
 interface ScheduledWorkloadLogsViewerProps {
   kind: string
@@ -18,14 +18,17 @@ const EMPTY_RUNS: WorkloadRun[] = []
 export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRunKey, onSelectRun }: ScheduledWorkloadLogsViewerProps) {
   const clusterScoped = kind === 'ClusterWorkflowTemplate' || kind === 'clusterworkflowtemplates'
   const runsQuery = useWorkloadRuns(kind, namespace, name, true, { clusterScoped, refetchActive: true })
+  const memberCollection = runsQuery.data?.collection === 'members'
   const runs = runsQuery.data?.runs ?? EMPTY_RUNS
-  const defaultRun = useMemo(() => pickDefaultRun(runs), [runs])
+  const defaultRun = useMemo(() => memberCollection ? runs[0] : pickDefaultRun(runs), [memberCollection, runs])
   const [localRunKey, setLocalRunKey] = useState('')
   const effectiveRunKey = selectedRunKey ?? localRunKey
   const selectRun = onSelectRun ?? setLocalRunKey
 
+  const selectionMissing = memberCollection && selectedRunMissing(runs, effectiveRunKey)
+
   useEffect(() => {
-    if (!runsQuery.data) return
+    if (!runsQuery.data || selectionMissing) return
     if (runs.length === 0) {
       if (effectiveRunKey) selectRun('')
       return
@@ -33,16 +36,16 @@ export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRun
     if (!runs.some(run => workloadRunKey(run) === effectiveRunKey)) {
       selectRun(workloadRunKey(defaultRun ?? runs[0]))
     }
-  }, [runsQuery.data, runs, effectiveRunKey, defaultRun, selectRun])
+  }, [runsQuery.data, runs, effectiveRunKey, defaultRun, selectRun, selectionMissing])
 
-  const selectedRun = runs.find(run => workloadRunKey(run) === effectiveRunKey) ?? defaultRun
+  const selectedRun = selectionMissing ? undefined : runs.find(run => workloadRunKey(run) === effectiveRunKey) ?? defaultRun
 
   if (runsQuery.isLoading) {
     return (
       <div className="flex h-full items-center justify-center text-theme-text-tertiary">
         <div className="flex items-center gap-2">
           <Loader2 className="h-4 w-4 animate-spin" />
-          <span>Loading runs...</span>
+          <span>{kind === 'JobSet' || kind === 'jobsets' ? 'Loading member Jobs...' : 'Loading runs...'}</span>
         </div>
       </div>
     )
@@ -52,7 +55,21 @@ export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRun
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-theme-text-tertiary">
         <Terminal className="h-8 w-8" />
-        <span>{runsQuery.error instanceof Error ? runsQuery.error.message : 'Failed to load runs'}</span>
+        <span>{runsQuery.error instanceof Error ? runsQuery.error.message : kind === 'JobSet' || kind === 'jobsets' ? 'Failed to load member Jobs' : 'Failed to load runs'}</span>
+      </div>
+    )
+  }
+
+  if (selectionMissing) {
+    return (
+      <div className="space-y-3 p-4">
+        <p className="text-sm text-theme-text-secondary">{runsQuery.data?.truncated
+          ? 'Selected Job is not among the shown members. It may have been removed or fallen outside the truncated window. Choose a shown Job below.'
+          : 'Selected Job is currently unavailable. It may have been removed or be waiting for recreation. Your selection is preserved if it reappears; choose another shown Job to switch.'}</p>
+        {runs.length > 0 && <select aria-label="Select a shown member Job" value={effectiveRunKey} onChange={(event) => selectRun(event.target.value)} className="max-w-full rounded-md border border-theme-border bg-theme-elevated px-2 py-1 text-sm text-theme-text-primary">
+          <option value={effectiveRunKey} disabled>Choose a shown Job</option>
+          {runs.map((run) => <option key={workloadRunKey(run)} value={workloadRunKey(run)}>{formatRunOption(run, false, true)}</option>)}
+        </select>}
       </div>
     )
   }
@@ -61,7 +78,7 @@ export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRun
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-theme-text-tertiary">
         <Terminal className="h-8 w-8" />
-        <span>No retained runs found</span>
+        <span>{memberCollection ? 'No child Jobs found' : 'No retained runs found'}</span>
       </div>
     )
   }
@@ -70,7 +87,7 @@ export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRun
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-theme-border bg-theme-surface px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-theme-text-secondary">Run</span>
+          <span className="text-xs font-medium text-theme-text-secondary">{memberCollection ? 'Job' : 'Run'}</span>
           <select
             value={workloadRunKey(selectedRun)}
             onChange={(event) => selectRun(event.target.value)}
@@ -78,21 +95,24 @@ export function ScheduledWorkloadLogsViewer({ kind, namespace, name, selectedRun
           >
             {runs.map(run => (
               <option key={workloadRunKey(run)} value={workloadRunKey(run)}>
-                {formatRunOption(run, clusterScoped)}
+                {formatRunOption(run, clusterScoped, memberCollection)}
               </option>
             ))}
           </select>
           <span className={clsx('badge-sm', phaseBadgeClass(selectedRun.phase))}>
-            {selectedRun.phase}
+            {selectedRun.phase}{selectedRun.deleting ? ' · deleting' : ''}
           </span>
           <span className="text-xs text-theme-text-tertiary">
             {formatRunTime(selectedRun)}
           </span>
+          {memberCollection && runsQuery.data?.truncated && (
+            <span className="text-xs text-theme-text-tertiary">Showing {runs.length} of {runsQuery.data.total} Jobs</span>
+          )}
         </div>
       </div>
       <div className="min-h-0 flex-1">
         <WorkloadLogsViewer
-          key={`${selectedRun.kind}/${selectedRun.namespace}/${selectedRun.name}`}
+          key={workloadRunLogsKey(selectedRun)}
           kind={selectedRun.kind}
           namespace={selectedRun.namespace}
           name={selectedRun.name}
@@ -125,11 +145,19 @@ function formatRunTime(run: WorkloadRun): string {
   return new Date(raw).toLocaleString()
 }
 
-function formatRunOption(run: WorkloadRun, showNamespace: boolean): string {
-  const bits = [showNamespace ? `${run.namespace}/${run.name}` : run.name, run.phase]
+function formatRunOption(run: WorkloadRun, showNamespace: boolean, memberCollection: boolean): string {
+  const bits = [showNamespace ? `${run.namespace}/${run.name}` : run.name, `${run.phase}${run.deleting ? ' · deleting' : ''}`]
+  if (memberCollection && run.jobset?.replicatedJob) {
+    bits.push(`${run.jobset?.replicatedJob}${run.jobset?.jobIndex ? ` #${run.jobset?.jobIndex}` : ''}`)
+  }
   if (run.progress) bits.push(run.progress)
   else if (run.desired) bits.push(`${run.succeeded ?? 0}/${run.desired}`)
   const work = run.podTotal ? `${run.podSucceeded ?? 0}/${run.podTotal} pods` : ''
   if (work) bits.push(work)
   return bits.join(' · ')
+}
+
+// A JobSet retry can replace a child Job at the same resource address.
+export function workloadRunLogsKey(run: WorkloadRun): string {
+  return JSON.stringify([run.group, workloadRunKey(run), run.jobset?.restartAttempt, run.jobset?.jobRestartAttempt])
 }
