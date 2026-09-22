@@ -110,7 +110,7 @@ wait_until() {
     sleep 2
   done
   warn "Last controller snapshot for '${description}':" >&2
-  kc -n "${DEMO_NS}" get jobsets.jobset.x-k8s.io,jobs,pods --request-timeout=10s -o json | \
+  kc -n "${SNAPSHOT_NS:-${DEMO_NS}}" get "${SNAPSHOT_KINDS:-jobsets.jobset.x-k8s.io,jobs,pods}" --request-timeout=10s -o json | \
     jq -c '.items[:10][] | {kind, name: .metadata.name, terminalState: .status.terminalState, roles: .status.replicatedJobsStatus, phase: .status.phase, conditions: .status.conditions}' >&2 || true
   fail "Timed out after ${WAIT_SECONDS}s waiting for ${description}. Inspect the lane with CLUSTER_NAME='${CLUSTER_NAME}' $0 status"
 }
@@ -562,6 +562,9 @@ Commands:
   status         Show the controller, JobSets, Jobs, and Pods with role/index labels
   verify         Assert controller-earned lifecycle and ownership states
   verify-radar   Assert a running Radar exposes the real JobSet states and children
+  up-admission   Add Kueue and four JobSet admission scenarios to this same cluster
+  verify-admission        Verify the combined controllers and pre-Pod blockers
+  verify-admission-radar  Verify both lanes plus Radar's connected admission lookup
   help           Show this message
 
 Environment:
@@ -573,9 +576,12 @@ Environment:
   RADAR_URL         running Radar base URL for verify-radar (default: http://127.0.0.1:9280)
 
 This validates JobSet controller reconciliation and Radar's read path. It does
-not validate GPUs, Kueue admission, distributed framework semantics, or cost.
+not validate GPUs, distributed framework semantics, or cost. The optional
+up-admission mode also validates Kueue admission (KUEUE_VERSION=v0.19.2).
 EOF
 }
+
+source "${FIXTURES_DIR}/admission.sh"
 
 case "${1:-help}" in
   up) cmd_up ;;
@@ -584,6 +590,9 @@ case "${1:-help}" in
   status) cmd_status ;;
   verify) cmd_verify ;;
   verify-radar) cmd_verify_radar ;;
+  up-admission) cmd_up_admission ;;
+  verify-admission) cmd_verify_admission ;;
+  verify-admission-radar) cmd_verify_admission_radar ;;
   help|-h|--help) usage ;;
   *) fail "unknown subcommand: $1 (try '$0 help')" ;;
 esac
