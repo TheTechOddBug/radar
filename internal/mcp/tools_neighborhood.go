@@ -146,6 +146,10 @@ func handleGetNeighborhood(ctx context.Context, req *mcp.CallToolRequest, input 
 	topology.ReadvertiseCalicoPolicyNodes(sub.Nodes, func(t topology.SARTuple) bool {
 		return canReadInNamespace(ctx, t.Group, t.Resource, t.Namespace, "get")
 	})
+	if len(sub.Nodes) > 0 && topology.IsCalicoPolicyKind(sub.Nodes[0].Kind) {
+		apiVersion, _ := sub.Nodes[0].Data["apiVersion"].(string)
+		sub.Root.Group = topology.APIVersionGroup(apiVersion)
+	}
 	if sub.AmbiguousRoot {
 		return nil, nil, fmt.Errorf("resource kind is ambiguous for %s/%s/%s; provide group", input.Kind, input.Namespace, input.Name)
 	}
@@ -156,17 +160,8 @@ func handleGetNeighborhood(ctx context.Context, req *mcp.CallToolRequest, input 
 		return nil, nil, fmt.Errorf("resource not found in topology: %s/%s/%s", input.Kind, input.Namespace, input.Name)
 	}
 
-	// Use the resolved root node's Kind for the response. displayKindForMCP
-	// only normalizes built-in kinds (Pod, Deployment, …); pseudo-kinds
-	// like "nodeclass"/"nodepool" pass through lowercase while subgraph
-	// nodes carry display-form NodeKind ("NodeClass"). Without this rewrite
-	// the response's root.kind would diverge from subgraph.nodes[0].kind
-	// within the same payload. Matches the REST handler's identical fix.
-	rootResp := root
-	rootResp.Kind = string(sub.Nodes[0].Kind)
-
 	result := neighborhoodResult{
-		Root: rootResp,
+		Root: sub.Root,
 		Subgraph: neighborhoodSubgraphMCP{
 			Nodes: sub.Nodes,
 			Edges: sub.Edges,

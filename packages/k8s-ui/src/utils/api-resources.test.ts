@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { categorizeResources, findAPIResourceForRoute, formatGroupName, isCoreBatchJob, shortenGroupName } from './api-resources'
+import { builtinGroupForKind, canonicalResourceGroup, categorizeResources, findAPIResourceForRoute, formatGroupName, isCoreBatchJob, shortenGroupName } from './api-resources'
+
+describe('canonicalResourceGroup', () => {
+  it('infers built-in groups from either Kind or resource name', () => {
+    expect(builtinGroupForKind('Service')).toBe('')
+    expect(builtinGroupForKind('jobs')).toBe('batch')
+    expect(builtinGroupForKind('PodDisruptionBudget')).toBe('policy')
+    expect(canonicalResourceGroup('Deployment', undefined)).toBe('apps')
+    expect(canonicalResourceGroup('Job', '')).toBe('batch')
+    expect(canonicalResourceGroup('ResourceClaim', undefined)).toBe('resource.k8s.io')
+    expect(canonicalResourceGroup('ControllerRevision', undefined)).toBe('apps')
+    expect(canonicalResourceGroup('Endpoints', undefined)).toBe('')
+  })
+
+  it('never overwrites an explicit custom group', () => {
+    expect(canonicalResourceGroup('Job', 'batch.volcano.sh')).toBe('batch.volcano.sh')
+    expect(canonicalResourceGroup('Widget', undefined)).toBeUndefined()
+    expect(canonicalResourceGroup('Widget', '')).toBeUndefined()
+  })
+})
 
 describe('findAPIResourceForRoute', () => {
   const resources = [

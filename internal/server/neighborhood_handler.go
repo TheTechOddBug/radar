@@ -165,6 +165,10 @@ func (s *Server) handleAINeighborhood(w http.ResponseWriter, r *http.Request) {
 	topology.ReadvertiseCalicoPolicyNodes(sub.Nodes, func(t topology.SARTuple) bool {
 		return s.canRead(r, t.Group, t.Resource, t.Namespace, "get")
 	})
+	if len(sub.Nodes) > 0 && topology.IsCalicoPolicyKind(sub.Nodes[0].Kind) {
+		apiVersion, _ := sub.Nodes[0].Data["apiVersion"].(string)
+		sub.Root.Group = topology.APIVersionGroup(apiVersion)
+	}
 	if sub.AmbiguousRoot {
 		s.writeError(w, http.StatusBadRequest, "resource kind is ambiguous; provide group")
 		return
@@ -174,18 +178,8 @@ func (s *Server) handleAINeighborhood(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use the resolved root node's Kind for the response, not the
-	// URL-derived (lowercase) form. Subgraph nodes carry display-form
-	// NodeKind values ("Pod", "KnativeService") — without this rewrite,
-	// the response's root.kind would be lowercase while
-	// subgraph.nodes[0].kind is display-form, breaking case-sensitive
-	// within-response matching and diverging from MCP's shape despite
-	// the header comment claiming both surfaces "parse identically".
-	rootResp := root
-	rootResp.Kind = string(sub.Nodes[0].Kind)
-
 	resp := neighborhoodResponse{
-		Root: rootResp,
+		Root: sub.Root,
 		Subgraph: neighborhoodSubgraph{
 			Nodes: sub.Nodes,
 			Edges: sub.Edges,

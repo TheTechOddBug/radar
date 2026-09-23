@@ -46,7 +46,8 @@ import { MiddleEllipsis } from '../ui/MiddleEllipsis'
 import { CollapseChevron } from '../ui/Collapse'
 import { Tooltip } from '../ui/Tooltip'
 import { ResourceRefBadge } from '../ui/drawer-components'
-import { buildResourceHierarchy, extractPinnedLanes, removePinnedLanes, isProblematicEvent, laneTrackEvents, isChildVisibleInWindow, collidingLaneKeys, laneCollisionKey, type ResourceLane as BaseResourceLane, type TimelineGrouping, type PinnedLaneRef } from '../../utils/resource-hierarchy'
+import { buildResourceHierarchy, extractPinnedLanes, removePinnedLanes, resolvePinnedLaneIds, isProblematicEvent, laneTrackEvents, isChildVisibleInWindow, collidingLaneKeys, laneCollisionKey, type ResourceLane as BaseResourceLane, type TimelineGrouping, type PinnedLaneRef } from '../../utils/resource-hierarchy'
+import { builtinGroupForKind } from '../../utils/api-resources'
 import { groupQualifiesLaneId } from '../../utils/navigation'
 import type { AppMembershipIndex } from '../../utils/applications'
 import { Layers } from 'lucide-react'
@@ -765,8 +766,8 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
   // deep-link to GitOps detail rather than the resource drawer — the lane is
   // already telling the user "this controller had changes/events"; the GitOps
   // tab is the right place to investigate further.
-  const handleLaneOpen = useCallback((kind: string, namespace: string, name: string, group?: string) => {
-    const gitOpsPath = gitOpsRouteForKind(kind, namespace, name)
+  const handleLaneOpen = useCallback((kind: string, namespace: string, name: string, group?: string, identityResolved?: boolean) => {
+    const gitOpsPath = gitOpsRouteForKind(kind, namespace, name, group, identityResolved)
     if (gitOpsPath && onNavigatePath) {
       onNavigatePath(gitOpsPath)
       return
@@ -1188,7 +1189,10 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
 
   // Pin MOVES a row: pinned lanes (and pinned children inside groups) leave
   // the regular list entirely — the pinned section is their only home.
-  const pinnedIdSetForFilter = useMemo(() => new Set((pinnedLanes ?? []).map((p) => p.id)), [pinnedLanes])
+  const pinnedIdSetForFilter = useMemo(
+    () => resolvePinnedLaneIds(lanes, pinnedLanes ?? []),
+    [lanes, pinnedLanes],
+  )
   const pinnedAppKeys = useMemo(
     () => new Set((pinnedLanes ?? []).flatMap((p) => (p.type === 'appGroup' ? [p.appKey] : []))),
     [pinnedLanes],
@@ -1233,16 +1237,16 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
     return n
   }, [pinnedLaneRows, visibleWindow])
 
-  const pinnedIdSet = useMemo(() => new Set((pinnedLanes ?? []).map((p) => p.id)), [pinnedLanes])
+  const pinnedIdSet = pinnedIdSetForFilter
   // A pin button for a lane, or null when the host wired no pin handler. A pinned
   // lane's button is filled and always visible (in the pinned section or its
   // original spot); an unpinned one reveals on row hover.
   const renderPinButton = useCallback((lane: ResourceLane): React.ReactNode => {
-    if (!onTogglePin) return null
+    if (!onTogglePin || lane.identityAmbiguous) return null
     const pinned = pinnedIdSet.has(lane.id)
     const ref: PinnedLaneRef = lane.isAppGroup && lane.appKey
       ? { type: 'appGroup', id: lane.id, appKey: lane.appKey, appName: lane.title ?? lane.name }
-      : { id: lane.id, kind: lane.kind, namespace: lane.namespace, name: lane.name }
+      : { id: lane.id, kind: lane.kind, group: lane.group, namespace: lane.namespace, name: lane.name }
     return (
       <PinButton
         pinned={pinned}
@@ -1659,10 +1663,10 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
                      chip + namespace. Only the NAME navigates; the rest is inert. */
                   <div className="flex-1 min-w-0 flex flex-col gap-0.5">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <Tooltip content={lane.name} wrapperClassName="min-w-0 flex-1">
+                      <Tooltip content={lane.identityAmbiguous ? `${lane.name} · API group unknown` : lane.name} wrapperClassName="min-w-0 flex-1">
                         <span
-                          onClick={() => handleLaneOpen(lane.kind, lane.namespace, lane.name, lane.group)}
-                          className={clsx('min-w-0 w-full text-sm text-theme-text-primary hover:text-accent-text hover:underline cursor-pointer', compact ? 'font-medium' : 'font-semibold font-mono')}
+                          onClick={lane.identityAmbiguous ? undefined : () => handleLaneOpen(lane.kind, lane.namespace, lane.name, lane.group, lane.identityResolved)}
+                          className={clsx('min-w-0 w-full text-sm text-theme-text-primary', !lane.identityAmbiguous && 'hover:text-accent-text hover:underline cursor-pointer', compact ? 'font-medium' : 'font-semibold font-mono')}
                         >
                           <MiddleEllipsis text={lane.name} className="block" />
                         </span>
@@ -1715,7 +1719,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
             hasChildren={hasVisibleChildren}
             expanded={isExpanded}
             onToggle={hasVisibleChildren ? () => toggleLane(lane.id) : undefined}
-            onClick={() => handleLaneOpen(lane.kind, lane.namespace, lane.name, lane.group)}
+            onClick={lane.identityAmbiguous ? undefined : () => handleLaneOpen(lane.kind, lane.namespace, lane.name, lane.group, lane.identityResolved)}
             pinButton={renderPinButton(lane)}
             title={
               lane.nestedByContract ? `${lane.name} · linked by naming`
@@ -2116,6 +2120,7 @@ export function TimelineSwimlanes({ events, isLoading, onResourceClick, viewMode
           onClose={closeDrawer}
           onResourceClick={onResourceClick}
           allEvents={filteredEvents}
+          resourceLanes={lanes}
         />
       )}
     </div>
@@ -2251,7 +2256,7 @@ function GroupChip({ group }: { group: string }) {
   )
 }
 
-function ChildLaneLabel({ kind, group, showGroupChip, kindTitle, name, labelWidthClass = 'w-[360px]', isLast, onClick, pinButton, title, depth = 1, hasChildren, expanded, onToggle }: { kind: string; group?: string; showGroupChip?: boolean; kindTitle?: string; name: string; labelWidthClass?: string; isLast: boolean; onClick: () => void; pinButton?: React.ReactNode; title?: string; depth?: number; hasChildren?: boolean; expanded?: boolean; onToggle?: () => void }) {
+function ChildLaneLabel({ kind, group, showGroupChip, kindTitle, name, labelWidthClass = 'w-[360px]', isLast, onClick, pinButton, title, depth = 1, hasChildren, expanded, onToggle }: { kind: string; group?: string; showGroupChip?: boolean; kindTitle?: string; name: string; labelWidthClass?: string; isLast: boolean; onClick?: () => void; pinButton?: React.ReactNode; title?: string; depth?: number; hasChildren?: boolean; expanded?: boolean; onToggle?: () => void }) {
   // Tree rails: the INCOMING trunk sits under the parent's chevron (rail d-1), the
   // row's own chevron sits on its CHILDREN's rail (rail d). Deriving both from one
   // ROOT keeps every level's vertical aligned under the chevron above it.
@@ -2293,7 +2298,7 @@ function ChildLaneLabel({ kind, group, showGroupChip, kindTitle, name, labelWidt
       <Tooltip content={title ?? name} wrapperClassName="min-w-0 flex-1">
         <span
           onClick={onClick}
-          className="min-w-0 w-full text-[13px] font-mono text-theme-text-secondary hover:text-accent-text hover:underline cursor-pointer"
+          className={clsx("min-w-0 w-full text-[13px] font-mono text-theme-text-secondary", onClick && "hover:text-accent-text hover:underline cursor-pointer")}
         >
           <MiddleEllipsis text={name} className="block" />
         </span>
@@ -3003,6 +3008,7 @@ interface EventDetailPanelProps {
   // Every event in view — powers the ±15-min correlation feed ("what else
   // happened around this deploy?"). Absent → the correlation section is omitted.
   allEvents?: TimelineEvent[]
+  resourceLanes?: BaseResourceLane[]
 }
 
 // The ±15-min window a single event's rail pulls correlated neighbours from
@@ -3044,7 +3050,7 @@ function ClusterEventRow({ event, active, onClick }: { event: TimelineEvent; act
   )
 }
 
-export function EventDetailPanel({ events, selectedId, onSelectId, onClose, onResourceClick, allEvents }: EventDetailPanelProps) {
+export function EventDetailPanel({ events, selectedId, onSelectId, onClose, onResourceClick, allEvents, resourceLanes }: EventDetailPanelProps) {
   // ONE drawer anatomy: rail left, detail right — for one event or
   // fifty. The shape never changes with count, so muscle memory holds. A single
   // clicked dot renders as a rail of one plus its ±15-min correlated neighbors,
@@ -3094,16 +3100,30 @@ export function EventDetailPanel({ events, selectedId, onSelectId, onClose, onRe
   // Index where correlated neighbors start (single-origin rails only) — a
   // divider separates "the dot you clicked" from "what happened around it".
   const neighborsFrom = events.length === 1 && railEvents.length > 1 ? 1 : -1
-  const openResource = () =>
+  const selectedLane = useMemo(() => {
+    const pending = [...(resourceLanes ?? [])];
+    while (pending.length > 0) {
+      const lane = pending.pop()!;
+      if (lane.events.some(event => event.id === selected.id)) return lane;
+      pending.push(...(lane.children ?? []));
+    }
+    return undefined;
+  }, [resourceLanes, selected.id]);
+  const group = selected.apiVersion
+    ? apiVersionToGroup(selected.apiVersion)
+    : selectedLane?.identityResolved && selectedLane.kind === selected.kind
+      ? selectedLane.group
+      : builtinGroupForKind(selected.kind);
+  const canOpenResource = !selectedLane?.identityAmbiguous && group !== undefined;
+  const openResource = () => {
+    if (!canOpenResource) return;
     onResourceClick?.({
-      kind: kindToPluralWithGroup(
-        selected.kind,
-        apiVersionToGroup(selected.apiVersion),
-      ),
+      kind: kindToPluralWithGroup(selected.kind, group ?? ''),
       namespace: selected.namespace,
       name: selected.name,
-      group: apiVersionToGroup(selected.apiVersion),
-    })
+      group,
+    });
+  };
 
   return (
     <div
@@ -3205,8 +3225,8 @@ export function EventDetailPanel({ events, selectedId, onSelectId, onClose, onRe
               {/* The ONE click target for the resource — the same badge used by
                   every Radar drawer, so it reads as "this navigates". */}
               <ResourceRefBadge
-                resourceRef={{ kind: selected.kind || 'Event', namespace: selected.namespace ?? '', name: selected.name }}
-                onClick={onResourceClick ? openResource : undefined}
+                resourceRef={{ kind: selected.kind || 'Event', namespace: selected.namespace ?? '', name: selected.name, group }}
+                onClick={onResourceClick && canOpenResource ? openResource : undefined}
               />
               {selected.namespace && <span className="text-xs text-theme-text-tertiary">in {selected.namespace}</span>}
             </dd>

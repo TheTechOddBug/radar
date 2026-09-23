@@ -38,7 +38,7 @@ import type { TimelineEvent, ResourceRef, Relationships, SelectedResource, Resol
 import type { GitOpsStatus } from '../../types/gitops'
 import type { NavigateToResource } from '../../utils/navigation'
 import { refToSelectedResource, pluralToKind, knownKindForPluralWithGroup, kindToPlural, kindToPluralWithGroup, apiVersionToGroup } from '../../utils/navigation'
-import { neighborhoodFor, seedNodeIds } from '../../utils/topology-neighborhood'
+import { neighborhoodFor, seedNodeIds, topologyNodeResourceKind } from '../../utils/topology-neighborhood'
 import { TopologyGraph } from '../topology/TopologyGraph'
 import { gitOpsOwnerFromRelationships, type GitOpsOwnerRef } from '../../utils/gitops-owner'
 import { gitOpsRouteForResource } from '../../utils/gitops-route'
@@ -441,8 +441,9 @@ export function WorkloadView({
   onOpenHelmRelease,
   onNavigateGitOpsPath,
 }: WorkloadViewProps) {
-  // Normalize kind: URL has plural lowercase, internal logic uses singular PascalCase
-  const kind = pluralToKind(kindProp)
+  // The live object preserves exact CRD capitalization (RayJob, TFJob); the URL
+  // plural remains the API resource name used by fetches and mutations.
+  const kind = resource?.kind || pluralToKind(kindProp)
   const apiKind = kindProp
 
   // Tab state — controlled or uncontrolled
@@ -498,14 +499,14 @@ export function WorkloadView({
     return buildResourceHierarchy({
       events: allEvents,
       topology,
-      rootResource: { kind, namespace, name },
+      rootResource: { kind, group, namespace, name },
       groupByApp: true,
     })
-  }, [allEvents, topology, kind, namespace, name])
+  }, [allEvents, topology, kind, group, namespace, name])
 
   // Topology tab — the seeded neighborhood around this one workload (its
   // ownership core + attached Services/config/policies), not the whole namespace.
-  const neighborhoodSeed = useMemo(() => [{ kind, namespace, name }], [kind, namespace, name])
+  const neighborhoodSeed = useMemo(() => [{ kind, group, namespace, name }], [kind, group, namespace, name])
   const neighborhood = useMemo(
     () => (topology ? neighborhoodFor(topology, neighborhoodSeed) : null),
     [topology, neighborhoodSeed],
@@ -538,7 +539,7 @@ export function WorkloadView({
       .filter((n) => n.kind !== 'Internet' && n.kind !== 'PodGroup')
       .map((n) => ({
         id: n.id,
-        kind: n.kind as string,
+        kind: topologyNodeResourceKind(n),
         namespace: (n.data?.namespace as string) || namespace,
         name: n.name,
         group: apiVersionToGroup(n.data?.apiVersion as string | undefined),
@@ -556,10 +557,11 @@ export function WorkloadView({
   const yamlObject = yamlObjectId ? yamlObjects.find((o) => o.id === yamlObjectId) : undefined
   const handleTopologyNodeClick = useCallback(
     (node: TopologyNode) => {
-      if (!onNavigateToResource || !node.kind || !node.name) return
+      const resourceKind = topologyNodeResourceKind(node)
+      if (!onNavigateToResource || !resourceKind || !node.name) return
       const group = apiVersionToGroup(node.data?.apiVersion as string | undefined)
       onNavigateToResource({
-        kind: kindToPluralWithGroup(node.kind, group),
+        kind: kindToPluralWithGroup(resourceKind, group),
         namespace: (node.data?.namespace as string) || '',
         name: node.name,
         group,

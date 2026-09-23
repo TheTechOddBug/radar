@@ -35,6 +35,9 @@ export const CORE_RESOURCES: APIResource[] = [
   { group: 'networking.k8s.io', version: 'v1', kind: 'NetworkPolicy', name: 'networkpolicies', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: 'discovery.k8s.io', version: 'v1', kind: 'EndpointSlice', name: 'endpointslices', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: 'autoscaling', version: 'v2', kind: 'HorizontalPodAutoscaler', name: 'horizontalpodautoscalers', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
+  { group: 'policy', version: 'v1', kind: 'PodDisruptionBudget', name: 'poddisruptionbudgets', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
+  { group: '', version: 'v1', kind: 'LimitRange', name: 'limitranges', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
+  { group: '', version: 'v1', kind: 'ResourceQuota', name: 'resourcequotas', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: '', version: 'v1', kind: 'Event', name: 'events', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: 'rbac.authorization.k8s.io', version: 'v1', kind: 'Role', name: 'roles', namespaced: true, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: 'rbac.authorization.k8s.io', version: 'v1', kind: 'ClusterRole', name: 'clusterroles', namespaced: false, isCrd: false, verbs: ['list', 'get', 'watch'] },
@@ -49,6 +52,29 @@ export const CORE_RESOURCES: APIResource[] = [
   { group: 'storage.k8s.io', version: 'v1', kind: 'StorageClass', name: 'storageclasses', namespaced: false, isCrd: false, verbs: ['list', 'get', 'watch'] },
   { group: 'storage.k8s.io', version: 'v1', kind: 'VolumeAttachment', name: 'volumeattachments', namespaced: false, isCrd: false, verbs: ['list', 'get', 'watch'] },
 ]
+
+// These identities are built-in but must not become always-present sidebar rows.
+const ADDITIONAL_BUILTIN_IDENTITIES: Record<string, string> = {
+  endpoints: '',
+  controllerrevision: 'apps', controllerrevisions: 'apps',
+  resourceclaim: 'resource.k8s.io', resourceclaims: 'resource.k8s.io',
+  resourceclaimtemplate: 'resource.k8s.io', resourceclaimtemplates: 'resource.k8s.io',
+  resourceslice: 'resource.k8s.io', resourceslices: 'resource.k8s.io',
+  deviceclass: 'resource.k8s.io', deviceclasses: 'resource.k8s.io',
+};
+
+export function builtinGroupForKind(kindOrResource: string): string | undefined {
+  const value = kindOrResource.toLowerCase()
+  return CORE_RESOURCES.find(resource =>
+    resource.kind.toLowerCase() === value || resource.name.toLowerCase() === value,
+  )?.group ?? ADDITIONAL_BUILTIN_IDENTITIES[value]
+}
+
+export function canonicalResourceGroup(kindOrResource: string, group: string | undefined): string | undefined {
+  const builtin = builtinGroupForKind(kindOrResource)
+  if (!group) return builtin
+  return group
+}
 
 export function findAPIResourceForRoute(
   resources: APIResource[] | undefined,

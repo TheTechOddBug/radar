@@ -37,12 +37,14 @@ import { EmptyState } from "../ui/EmptyState";
 import { ResourceRefBadge } from "../ui/drawer-components";
 import { TopologyGraph } from "../topology/TopologyGraph";
 import { pluralize } from "../../utils/pluralize";
+import { canonicalResourceGroup } from "../../utils/api-resources";
 import { kindToPluralWithGroup, refToSelectedResource } from "../../utils/navigation";
 import {
   batchRunParentNodes,
   tagWorkloadOwnership,
   seedNodeIds,
   ownershipOf,
+  topologyNodeResourceKind,
   workloadKey,
   type NeighborhoodSeed,
 } from "../../utils/topology-neighborhood";
@@ -534,9 +536,14 @@ export function ApplicationDetail({
         return;
       }
       const ns = (node.data?.namespace as string) || "";
+      const resourceKind = topologyNodeResourceKind(node);
+      const group = topologyGroup(node);
       const match = workloads.find(
         (w) =>
-          w.kind === node.kind && w.name === node.name && w.namespace === ns,
+          w.kind === resourceKind &&
+          canonicalResourceGroup(w.kind, w.group) === canonicalResourceGroup(resourceKind, group) &&
+          w.name === node.name &&
+          w.namespace === ns,
       );
       if (match) {
         setSelected(workloadKey(match));
@@ -545,9 +552,12 @@ export function ApplicationDetail({
       const parents = appGraph ? batchRunParentNodes(appGraph, node) : [];
       const parentWorkload = parents.flatMap((parent) => {
         const parentNamespace = (parent.data?.namespace as string) || "";
+        const parentKind = topologyNodeResourceKind(parent);
+        const parentGroup = topologyGroup(parent);
         const workload = workloads.find(
           (candidate) =>
-            candidate.kind === parent.kind &&
+            candidate.kind === parentKind &&
+            canonicalResourceGroup(candidate.kind, candidate.group) === canonicalResourceGroup(parentKind, parentGroup) &&
             candidate.name === parent.name &&
             candidate.namespace === parentNamespace,
         );
@@ -557,9 +567,8 @@ export function ApplicationDetail({
         onSelectWorkloadRun(parentWorkload, node);
         return;
       }
-      const group = topologyGroup(node);
       onNavigateToResource?.({
-        kind: kindToPluralWithGroup(node.kind, group ?? ""),
+        kind: kindToPluralWithGroup(resourceKind, group ?? ""),
         namespace: ns,
         name: node.name,
         group,
@@ -2446,14 +2455,18 @@ function ApplicationHistoryLine({
   onNavigateToResource?: (resource: ResourceRef) => void;
   onOpenSource?: (source: AppSourceRef) => void;
 }) {
-  const workload = item.resource
-    ? workloads.find(
-        (candidate) =>
-          candidate.kind.toLowerCase() === item.resource!.kind.toLowerCase() &&
-          candidate.namespace === item.resource!.namespace &&
-          candidate.name === item.resource!.name,
-      )
+  const candidates = item.resource
+    ? workloads.filter(candidate =>
+        candidate.kind.toLowerCase() === item.resource!.kind.toLowerCase() &&
+        candidate.namespace === item.resource!.namespace &&
+        candidate.name === item.resource!.name)
+    : [];
+  const resourceGroup = item.resource
+    ? canonicalResourceGroup(item.resource.kind, item.resource.group)
     : undefined;
+  const workload = resourceGroup !== undefined
+    ? candidates.find(candidate => canonicalResourceGroup(candidate.kind, candidate.group) === resourceGroup)
+    : candidates.length === 1 ? candidates[0] : undefined;
   const Icon =
     item.category === "deployment"
       ? GitCommit
