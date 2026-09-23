@@ -286,6 +286,38 @@ const (
 	CRDDiscoveryComplete   CRDDiscoveryStatus = "ready"       // Discovery complete
 )
 
+type DynamicObservationState string
+
+const (
+	DynamicObservationUnwatched   DynamicObservationState = "unwatched"
+	DynamicObservationDeferred    DynamicObservationState = "deferred"
+	DynamicObservationSyncing     DynamicObservationState = "syncing"
+	DynamicObservationSynced      DynamicObservationState = "synced"
+	DynamicObservationDenied      DynamicObservationState = "denied"
+	DynamicObservationUnsupported DynamicObservationState = "unsupported"
+)
+
+type DynamicObservationScope string
+
+const (
+	DynamicObservationScopeCluster            DynamicObservationScope = "cluster"
+	DynamicObservationScopeExplicitNamespaces DynamicObservationScope = "explicit_namespaces"
+)
+
+// DynamicResourceObservation reports initial cache synchronization and its scope,
+// not current authorization or continuous watch health. HTTP responses project
+// scope to visible namespaces; reasons describe cache evidence, not permissions.
+// Watch origin/start time and projection flags are deliberately omitted: they do
+// not establish freshness, and explicit namespace scope already bounds coverage.
+type DynamicResourceObservation struct {
+	State      DynamicObservationState `json:"state"`
+	ReasonCode string                  `json:"reasonCode,omitempty"`
+	Scope      DynamicObservationScope `json:"scope,omitempty"`
+	Namespaces []string                `json:"namespaces,omitempty"`
+	Truncated  bool                    `json:"truncated,omitempty"`  // Incomplete namespace probing, beyond intentional scope limits.
+	ObservedAt *time.Time              `json:"observedAt,omitempty"` // Age of a retained probe decision, not resource freshness.
+}
+
 // DynamicCacheConfig holds configuration for creating a DynamicResourceCache.
 // All application-specific behavior is injected via callbacks — the cache
 // itself has no imports of any internal/ package.
@@ -336,6 +368,11 @@ type DynamicCacheConfig struct {
 	// precedence over NamespaceFallback.
 	NamespaceFallback  string
 	NamespaceFallbacks []string
+	// NamespaceFallbacksTruncated means the candidate set is incomplete because
+	// namespace enumeration was non-authoritative or the configured safety bound
+	// omitted candidates. It matters only when a GVR cannot be watched
+	// cluster-wide and falls back to per-namespace informers.
+	NamespaceFallbacksTruncated bool
 
 	// DebugEvents enables verbose debug logging.
 	DebugEvents bool

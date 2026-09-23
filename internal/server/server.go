@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -1977,7 +1978,40 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, result)
 }
 
+type apiResourceResponse struct {
+	k8score.APIResource
+	Featured    bool                                `json:"featured,omitempty"`
+	Observation *k8score.DynamicResourceObservation `json:"observation,omitempty"`
+}
+
+func filterDynamicObservationNamespaces(observation k8score.DynamicResourceObservation, allowed []string) k8score.DynamicResourceObservation {
+	if allowed == nil {
+		return observation
+	}
+	switch observation.Scope {
+	case k8score.DynamicObservationScopeCluster:
+		observation.Scope = k8score.DynamicObservationScopeExplicitNamespaces
+		observation.Namespaces = append([]string(nil), allowed...)
+	case k8score.DynamicObservationScopeExplicitNamespaces:
+		if len(observation.Namespaces) > 0 {
+			observation.Namespaces = intersectNamespaces(allowed, observation.Namespaces)
+		}
+	}
+	if len(allowed) == 0 || (observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && len(observation.Namespaces) == 0) {
+		return k8score.DynamicResourceObservation{
+			State:      k8score.DynamicObservationUnwatched,
+			ReasonCode: "no_visible_observation",
+			Scope:      k8score.DynamicObservationScopeExplicitNamespaces,
+		}
+	}
+
+	return observation
+}
+
 func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
+	if !s.requireConnected(w) {
+		return
+	}
 	discovery := k8s.GetResourceDiscovery()
 	if discovery == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "Resource discovery not available")
@@ -1990,16 +2024,31 @@ func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type apiResourceResponse struct {
-		k8score.APIResource
-		Featured bool `json:"featured,omitempty"`
-	}
 	result := make([]apiResourceResponse, 0, len(resources))
+	dynamicCache := k8s.GetDynamicResourceCache()
+	var visibleNamespaces []string
+	visibleNamespacesResolved := false
 	for _, resource := range resources {
-		result = append(result, apiResourceResponse{
+		response := apiResourceResponse{
 			APIResource: resource,
 			Featured:    isFeaturedKubernetesAPI(resource.Group, resource.Kind),
-		})
+		}
+		if resource.IsCRD && dynamicCache != nil {
+			observation := dynamicCache.Observation(schema.GroupVersionResource{
+				Group:    resource.Group,
+				Version:  resource.Version,
+				Resource: resource.Name,
+			})
+			if resource.Namespaced {
+				if !visibleNamespacesResolved {
+					visibleNamespaces = s.getUserNamespaces(r, nil)
+					visibleNamespacesResolved = true
+				}
+				observation = filterDynamicObservationNamespaces(observation, visibleNamespaces)
+			}
+			response.Observation = &observation
+		}
+		result = append(result, response)
 	}
 	s.writeJSON(w, result)
 }

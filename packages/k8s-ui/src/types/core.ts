@@ -747,6 +747,28 @@ export interface ResourceWithRelationships<T = unknown> {
 }
 
 // API Resource (from discovery endpoint)
+export type DynamicObservationState =
+  | 'unwatched'
+  | 'deferred'
+  | 'syncing'
+  | 'synced'
+  | 'denied'
+  | 'unsupported'
+
+export type DynamicObservationScope = 'cluster' | 'explicit_namespaces'
+
+/** Initial sync and viewer-visible scope, not watch health or authorization.
+ * Origin/start time and projection flags are omitted; none proves freshness. */
+export interface DynamicResourceObservation {
+  /** Time of a retained probe decision, not resource freshness. */
+  observedAt?: string
+  state: DynamicObservationState
+  scope?: DynamicObservationScope
+  namespaces?: string[]
+  truncated?: boolean
+  reasonCode?: string
+}
+
 export interface APIResource {
   group: string
   version: string
@@ -756,6 +778,7 @@ export interface APIResource {
   isCrd: boolean
   featured?: boolean
   verbs: string[]
+  observation?: DynamicResourceObservation
 }
 
 // Helm release types
