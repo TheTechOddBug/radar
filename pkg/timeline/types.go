@@ -101,23 +101,9 @@ const (
 	HealthUnknown HealthState = "unknown"
 )
 
-// GroupingMode determines how events are grouped in the timeline
-type GroupingMode string
-
-const (
-	// GroupByNone returns a flat list of events
-	GroupByNone GroupingMode = "none"
-	// GroupByOwner groups events by K8s owner references
-	GroupByOwner GroupingMode = "owner"
-	// GroupByApp groups events by app.kubernetes.io/name or app label
-	GroupByApp GroupingMode = "app"
-	// GroupByNamespace groups events by namespace
-	GroupByNamespace GroupingMode = "namespace"
-)
-
 // TimelineEvent is the unified event type stored in the timeline.
 // It normalizes events from all sources (informer, K8s Event, historical)
-// into a single structure that can be queried and grouped efficiently.
+// into a single structure that can be queried efficiently.
 type TimelineEvent struct {
 	// Core identity
 	ID        string      `json:"id"`
@@ -171,60 +157,6 @@ type TimelineEvent struct {
 // IsManaged returns true if this resource is managed by another (RS, Pod, Event)
 func (e *TimelineEvent) IsManaged() bool {
 	return e.Owner != nil || e.Kind == "ReplicaSet" || e.Kind == "Pod" || e.Kind == "Event"
-}
-
-// IsToplevelWorkload returns true if this is a top-level workload (representative in timeline)
-func (e *TimelineEvent) IsToplevelWorkload() bool {
-	switch e.Kind {
-	case "Deployment", "Rollout", "DaemonSet", "StatefulSet",
-		"Service", "Job", "CronJob",
-		"Workflow", "CronWorkflow": // Argo Workflows
-		return true
-	}
-	return false
-}
-
-// GetAppLabel returns the app label value for grouping (app.kubernetes.io/name or app)
-func (e *TimelineEvent) GetAppLabel() string {
-	if e.Labels == nil {
-		return ""
-	}
-	if v, ok := e.Labels["app.kubernetes.io/name"]; ok && v != "" {
-		return v
-	}
-	if v, ok := e.Labels["app"]; ok && v != "" {
-		return v
-	}
-	return ""
-}
-
-// EventGroup represents a group of related events in the timeline
-type EventGroup struct {
-	ID        string          `json:"id"` // e.g., "Deployment/default/nginx"
-	Kind      string          `json:"kind"`
-	Name      string          `json:"name"`
-	Namespace string          `json:"namespace"`
-	Events    []TimelineEvent `json:"events"`
-	Children  []EventGroup    `json:"children,omitempty"`
-
-	// Aggregated info
-	HealthState HealthState `json:"healthState,omitempty"` // Worst health of all events
-	EventCount  int         `json:"eventCount"`            // Total events including children
-}
-
-// TimelineResponse is the response from the timeline API with grouping
-type TimelineResponse struct {
-	Groups    []EventGroup    `json:"groups"`
-	Ungrouped []TimelineEvent `json:"ungrouped,omitempty"` // Events that don't fit any group
-	Meta      TimelineMeta    `json:"meta"`
-}
-
-// TimelineMeta contains metadata about the timeline query result
-type TimelineMeta struct {
-	TotalEvents int   `json:"totalEvents"`
-	GroupCount  int   `json:"groupCount"`
-	QueryTimeMs int64 `json:"queryTimeMs"`
-	HasMore     bool  `json:"hasMore"` // For pagination
 }
 
 // FilterPreset defines a named filter configuration
