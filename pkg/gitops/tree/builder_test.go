@@ -48,6 +48,7 @@ func TestBuildArgoTreeUsesManagedInventoryAndOwnershipEdges(t *testing.T) {
 			"name":      "billing",
 			"namespace": "argocd",
 		},
+		"spec": map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
 		"status": map[string]any{
 			"sync":   map[string]any{"status": "Synced"},
 			"health": map[string]any{"status": "Healthy"},
@@ -98,6 +99,7 @@ func TestBuildDoesNotEnrichManagedResourcesOutsideAllowedNamespaces(t *testing.T
 			"name":      "billing",
 			"namespace": "argocd",
 		},
+		"spec": map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
 		"status": map[string]any{
 			"sync":   map[string]any{"status": "Synced"},
 			"health": map[string]any{"status": "Healthy"},
@@ -199,6 +201,7 @@ func TestBuildUnknownKindWarnsOnceAndKeepsSyntheticNodes(t *testing.T) {
 		"apiVersion": "argoproj.io/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "monitoring", "namespace": "argocd"},
+		"spec":       map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
 		"status":     map[string]any{"resources": resources},
 	}}
 	deployment := &unstructured.Unstructured{Object: map[string]any{
@@ -267,6 +270,7 @@ func TestBuildParallelEnrichmentMatchesObjects(t *testing.T) {
 		"apiVersion": "argoproj.io/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "cms", "namespace": "argocd"},
+		"spec":       map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
 		"status":     map[string]any{"resources": resources},
 	}}
 	objects[refKey(ResourceRef{Group: "argoproj.io", Kind: "Application", Namespace: "argocd", Name: "cms"})] = app
@@ -426,4 +430,78 @@ func TestBuild_RemoteDestinationReadsNothingLocal(t *testing.T) {
 		t.Errorf("Summary.Degraded = %d, want 0 (nothing local counts)", tree.Summary.Degraded)
 	}
 	assertNoDynamicCall(t, dynamic, ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"})
+}
+
+// A Flux Kustomization with spec.kubeConfig applies to another cluster: like a
+// remote Argo destination, its inventory must not pick up a same-named local
+// Deployment's health, metadata or children.
+func TestBuild_RemoteFluxKustomizationReadsNothingLocal(t *testing.T) {
+	ks := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
+		"metadata": map[string]any{"name": "fleet-prod", "namespace": "flux-system"},
+		"spec":     map[string]any{"kubeConfig": map[string]any{"secretRef": map[string]any{"name": "prod-kubeconfig"}}},
+		"status": map[string]any{"inventory": map[string]any{"entries": []any{
+			map[string]any{"id": "prod_billing_apps_Deployment", "v": "v1"},
+		}}},
+	}}
+	localDep := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "billing", "namespace": "prod", "uid": "local-uid", "labels": map[string]any{"local": "yes"}},
+	}}
+	dynamic := &fakeDynamic{objects: map[string]*unstructured.Unstructured{
+		refKey(ResourceRef{Group: "kustomize.toolkit.fluxcd.io", Kind: "kustomizations", Namespace: "flux-system", Name: "fleet-prod"}): ks,
+		refKey(ResourceRef{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization", Namespace: "flux-system", Name: "fleet-prod"}):  ks,
+		refKey(ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"}):                                      localDep,
+	}}
+	topo := &topology.Topology{
+		Nodes: []topology.Node{
+			{ID: "deployment/prod/billing", Kind: topology.KindDeployment, Name: "billing", Status: topology.StatusUnhealthy, Data: map[string]any{"namespace": "prod", "group": "apps"}},
+			{ID: "pod/prod/billing-1", Kind: topology.KindPod, Name: "billing-1", Status: topology.StatusUnhealthy, Data: map[string]any{"namespace": "prod"}},
+		},
+		Edges: []topology.Edge{{ID: "e", Source: "deployment/prod/billing", Target: "pod/prod/billing-1", Type: topology.EdgeManages}},
+	}
+	tree, _, err := NewBuilder(dynamic, topo).Build(context.Background(), "kustomizations", "flux-system", "fleet-prod", "kustomize.toolkit.fluxcd.io")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !tree.RemoteDestination {
+		t.Fatal("RemoteDestination = false, want true for a kubeConfig Kustomization")
+	}
+	dep := findNode(t, tree, ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"})
+	if dep.Ref.UID != "" || dep.Data["labels"] != nil || dep.TopologyStatus != "unknown" {
+		t.Errorf("remote Deployment took local state: %+v", dep)
+	}
+	for _, n := range tree.Nodes {
+		if n.Ref.Kind == "Pod" {
+			t.Errorf("local Pod attached to a remote Kustomization's tree: %+v", n.Ref)
+		}
+	}
+	assertNoDynamicCall(t, dynamic, ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "billing"})
+}
+
+// A HelmRelease has no inventory, so its tree is recovered from local objects
+// carrying its Helm labels — which a release targeting another cluster must
+// not do: a local workload with matching labels belongs to someone else.
+func TestBuild_RemoteFluxHelmReleaseRecoversNothingLocal(t *testing.T) {
+	hr := helmRelease("flux-system", "podinfo")
+	hr.Object["spec"] = map[string]any{"kubeConfig": map[string]any{"secretRef": map[string]any{"name": "prod-kubeconfig"}}}
+	dynamic := &fakeDynamic{objects: map[string]*unstructured.Unstructured{
+		refKey(ResourceRef{Group: "helm.toolkit.fluxcd.io", Kind: "helmreleases", Namespace: "flux-system", Name: "podinfo"}): hr,
+		refKey(ResourceRef{Group: "helm.toolkit.fluxcd.io", Kind: "HelmRelease", Namespace: "flux-system", Name: "podinfo"}):  hr,
+	}}
+	topo := &topology.Topology{Nodes: []topology.Node{
+		topoNode("Deployment", "demo", "podinfo", map[string]string{fluxHelmNameLabel: "podinfo", fluxHelmNamespaceLabel: "flux-system"}),
+	}}
+	tree, _, err := NewBuilder(dynamic, topo).Build(context.Background(), "helmreleases", "flux-system", "podinfo", "helm.toolkit.fluxcd.io")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !tree.RemoteDestination {
+		t.Fatal("RemoteDestination = false, want true for a kubeConfig HelmRelease")
+	}
+	for _, n := range tree.Nodes {
+		if n.Ref.Kind == "Deployment" {
+			t.Fatalf("remote HelmRelease picked up a local workload: %+v", n.Ref)
+		}
+	}
 }

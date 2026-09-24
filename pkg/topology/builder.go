@@ -862,7 +862,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	if resourceDiscovery != nil {
 		helmReleaseGVR, hasHelmReleases = resourceDiscovery.GetGVRWithGroup("HelmRelease", "helm.toolkit.fluxcd.io")
 	}
-	helmReleaseIDs := make(map[string]string) // ns/name -> helmReleaseID
+	helmReleaseIDs := make(map[string]string)   // ns/name -> helmReleaseID
+	remoteHelmReleases := make(map[string]bool) // ns/name of releases with spec.kubeConfig
 	if hasHelmReleases && dynamicCache != nil {
 		helmReleases, err := dynamicCache.ListNamespaces(helmReleaseGVR, opts.Namespaces)
 		if err != nil {
@@ -878,6 +879,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			hrID := fmt.Sprintf("helmrelease/%s/%s", ns, name)
 			helmReleaseIDs[ns+"/"+name] = hrID
+			if !gitops.FluxTargetsLocalCluster(hr) {
+				remoteHelmReleases[ns+"/"+name] = true
+			}
 
 			// Extract status fields
 			status, _, _ := unstructured.NestedMap(hr.Object, "status")
@@ -4437,7 +4441,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// - app.kubernetes.io/instance (standard Helm label)
 	for hrKey, hrID := range helmReleaseIDs {
 		parts := strings.Split(hrKey, "/")
-		if len(parts) != 2 {
+		// A release applied to another cluster installed nothing here; a local
+		// workload with matching labels belongs to some other release.
+		if len(parts) != 2 || remoteHelmReleases[hrKey] {
 			continue
 		}
 		hrNS := parts[0]
@@ -5869,6 +5875,11 @@ func addGitOpsManagedResourceEdges(
 		"TCPRoute": true, "TLSRoute": true,
 	}
 	for _, app := range applications {
+		// A remote destination's status.resources name objects in that
+		// cluster; a same-named local object isn't the one it manages.
+		if !gitops.IsInClusterDestination(app) {
+			continue
+		}
 		appID := applicationIDs[app.GetNamespace()+"/"+app.GetName()]
 		destNamespace := applicationDestNamespaces[appID]
 		resources, _, _ := unstructured.NestedSlice(app.Object, "status", "resources")
@@ -5896,6 +5907,9 @@ func addGitOpsManagedResourceEdges(
 		"GRPCRoute": true, "TCPRoute": true, "TLSRoute": true,
 	}
 	for _, kustomization := range kustomizations {
+		if !gitops.FluxTargetsLocalCluster(kustomization) {
+			continue
+		}
 		ksID := kustomizationIDs[kustomization.GetNamespace()+"/"+kustomization.GetName()]
 		entries, _, _ := unstructured.NestedSlice(kustomization.Object, "status", "inventory", "entries")
 		for _, entry := range entries {

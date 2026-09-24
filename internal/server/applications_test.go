@@ -630,7 +630,7 @@ func TestManagedSourceRefs_CrossNamespaceArgoApplication(t *testing.T) {
 	app := &unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{"namespace": "argocd", "name": "billing"},
 		"spec": map[string]any{
-			"destination": map[string]any{"namespace": "team-a"},
+			"destination": map[string]any{"server": "https://kubernetes.default.svc", "namespace": "team-a"},
 		},
 		"status": map[string]any{"resources": []any{
 			map[string]any{"group": "apps", "kind": "Deployment", "name": "api"},
@@ -651,6 +651,7 @@ func TestManagedSourceRefs_CrossNamespaceArgoApplication(t *testing.T) {
 func TestManagedSourceRefs_ArgoStatusKeepsWorkloadGroup(t *testing.T) {
 	app := &unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{"namespace": "argocd", "name": "training"},
+		"spec":     map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
 		"status": map[string]any{"resources": []any{
 			map[string]any{"group": "batch.volcano.sh", "kind": "Job", "namespace": "ml", "name": "train"},
 		}},
@@ -1502,5 +1503,30 @@ func TestWarningEventIndexResolvesOnlyUnambiguousGroups(t *testing.T) {
 	index = indexWarningEventsByObject(cache, []string{"dev"}, graph)
 	if got := eventsForWorkload(index["dev"], "argoproj.io", "Rollout", "api", nil); len(got) != 0 {
 		t.Fatalf("ambiguous warning attributed: %+v", got)
+	}
+}
+
+// An Argo CD hub lists the same chart's resources for every cluster it deploys
+// to. Only the Application deploying to this cluster manages the local object;
+// another cluster's Application naming the same Deployment must not claim it.
+func TestManagedSourceRefs_IgnoreRemoteArgoDestinations(t *testing.T) {
+	app := func(name string, destination map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{"namespace": "argocd", "name": name},
+			"spec":     map[string]any{"destination": destination},
+			"status": map[string]any{"resources": []any{
+				map[string]any{"group": "apps", "kind": "Deployment", "namespace": "sealed-secrets", "name": "controller"},
+			}},
+		}}
+	}
+	sources := map[string][]appSourceRef{}
+	addArgoManagedSourceRefs(sources, []*unstructured.Unstructured{
+		app("sealed-secrets-prod", map[string]any{"server": "https://prod.example.com", "namespace": "sealed-secrets"}),
+		app("sealed-secrets-hub", map[string]any{"server": "https://kubernetes.default.svc", "namespace": "sealed-secrets"}),
+		app("sealed-secrets-staging", map[string]any{"name": "staging", "namespace": "sealed-secrets"}),
+	})
+	ref := commonManagedSourceRef([]appWorkload{{Group: "apps", Kind: "Deployment", Namespace: "sealed-secrets", Name: "controller"}}, sources)
+	if ref == nil || ref.Name != "sealed-secrets-hub" {
+		t.Fatalf("source ref = %+v, want the in-cluster Application only", ref)
 	}
 }

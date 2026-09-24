@@ -89,17 +89,20 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 
 	tool := detectTool(root, group, kind)
 	managed := managedResources(root, tool)
-	// An Argo Application deploying to another cluster declares resources
-	// that live THERE. Matching them against this cluster's topology or
-	// cache would attribute an unrelated same-named local object's health,
-	// labels and ownership to them — so for a remote destination the
-	// declared nodes carry only what the CR says (sync, persisted health)
-	// and nothing local is read for them. Hub-side hosts merge the
-	// destination cluster's own tree on top (mergeGitOpsTrees).
-	remote := tool == ToolArgoCD && strings.EqualFold(root.GetKind(), "Application") && !gitops.IsInClusterDestination(root)
+	// An Argo Application deploying to another cluster, or a Flux object with
+	// spec.kubeConfig, declares resources that live THERE. Matching them
+	// against this cluster's topology or cache would attribute an unrelated
+	// same-named local object's health, labels and ownership to them — so for
+	// a remote destination the declared nodes carry only what the CR says
+	// (sync, persisted health) and nothing local is read for them. Hub-side
+	// hosts merge the destination cluster's own tree on top (mergeGitOpsTrees).
+	remote := (tool == ToolArgoCD && strings.EqualFold(root.GetKind(), "Application") && !gitops.IsInClusterDestination(root)) ||
+		(tool == ToolFluxCD && !gitops.FluxTargetsLocalCluster(root))
 	// HelmRelease has no status.inventory; recover its managed set from live
 	// topology by Helm's recommended labels so the resource tree isn't empty.
-	if tool == ToolFluxCD && strings.EqualFold(root.GetKind(), "HelmRelease") && len(managed) == 0 {
+	// A remote release's objects aren't in local topology, so a local match is
+	// someone else's.
+	if tool == ToolFluxCD && strings.EqualFold(root.GetKind(), "HelmRelease") && len(managed) == 0 && !remote {
 		managed = fluxHelmReleaseManaged(root, b.topoNodes())
 	}
 	status := rootStatus(root, tool)
@@ -289,9 +292,9 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 		Warnings: warnings,
 		Summary:  summary,
 	}
+	out.RemoteDestination = remote
 	if tool == ToolArgoCD && strings.EqualFold(root.GetKind(), "Application") {
 		out.HealthMode = argoHealthMode(root)
-		out.RemoteDestination = remote
 	}
 	return out, root, nil
 }
