@@ -19,6 +19,7 @@ import {
   formatGitOpsSourceUrl,
   getGitOpsResourceStatus,
   getGitOpsTool,
+  isDestinationRef,
   isArgoOperationInProgress,
   isArgoSuspendedByRadar,
   gitOpsInsightChangeKey,
@@ -40,11 +41,15 @@ import {
   type GitOpsRow,
   type GitOpsRowAction,
   type GitOpsTreeFilters,
+  type GitOpsTreeNode,
   type GitOpsTreeRef,
   type GitOpsTreePreset,
   type SelectedResource,
 } from '@skyhook-io/k8s-ui'
 import { useToast } from '../ui/Toast'
+import { useContextSwitchFlow } from '../useContextSwitchFlow'
+import { useDestinationCluster } from './useDestinationCluster'
+import { destinationToast } from './destination-toast'
 
 import {
   fetchJSON,
@@ -352,7 +357,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
 function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOpsViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
-  const { showError, showSuccess } = useToast()
+  const { showError, showSuccess, showToast } = useToast()
   const parts = location.pathname.split('/').filter(Boolean)
   const kind = parts[2] || 'applications'
   const namespace = parts[3] === '_' ? '' : decodePathPart(parts[3] || '')
@@ -380,6 +385,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
   const resourceQ = useResource<any>(kind, namespace, name, group)
   const treeQ = useGitOpsTree(kind, namespace, name, group, namespaces)
   const insightsQ = useGitOpsInsights(kind, namespace, name, group, namespaces)
+  const switchFlow = useContextSwitchFlow()
   const status = resourceQ.data ? getGitOpsResourceStatus(kind, resourceQ.data) : null
   const tool = getGitOpsTool(kind, group)
   // Argo "auto-sync ON" is determined by spec.syncPolicy.automated being set,
@@ -463,8 +469,32 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
     roles: graphRoles,
   }), [graphHealth, graphKinds, graphNamespaces, graphRoles, graphSync])
   const graphFacets = useMemo(() => buildTreeFacets(tree), [tree])
+  // The tree and insights load separately; either one seeing a remote
+  // destination is enough to keep its resources from opening here.
+  const remoteDestination = !!(tree?.remoteDestination || insightsQ.data?.summary?.remoteDestination)
+  const destination = useDestinationCluster(remoteDestination, kind, namespace, name)
 
-  function openResourceFromTree(ref: GitOpsTreeRef | GitOpsInsightRef) {
+  function openResourceFromTree(ref: GitOpsTreeRef | GitOpsInsightRef, node?: GitOpsTreeNode) {
+    // Locality comes from the node, not the name: a remote app can deploy a
+    // same-named copy of itself to its destination.
+    if (node?.role !== 'root' && isDestinationRef(tree, remoteDestination, ref)) {
+      const toast = destinationToast(`${ref.kind} ${ref.namespace ? `${ref.namespace}/` : ''}${ref.name}`, destination)
+      const target = destination.context
+      showToast(toast.message, {
+        type: 'info',
+        detail: toast.detail,
+        action: toast.actionLabel && target ? {
+          label: toast.actionLabel,
+          onClick: () => switchFlow.requestSwitch(target, {
+            kind: kindToPluralWithGroup(ref.kind, ref.group ?? ''),
+            namespace: ref.namespace || '',
+            name: ref.name,
+            group: ref.group,
+          }),
+        } : undefined,
+      })
+      return
+    }
     if (isGitOpsDetailRef(ref) && isValidKubernetesName(ref.name)) {
       const detailKind = kindToPluralWithGroup(ref.kind, ref.group ?? '')
       // The tree's root node is this page's own subject — clicking it must not
@@ -822,6 +852,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
       }}
     >
       {/* Modals — portaled to body, only render the ones for the current tool. */}
+      {switchFlow.confirmDialog}
       {isArgoApp && (
         <>
           <SyncOptionsDialog
