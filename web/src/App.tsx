@@ -49,6 +49,7 @@ import { CapabilitiesProvider, useCapabilitiesContext } from './contexts/Capabil
 import { UserMenu } from './components/UserMenu'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { UpdateNotification } from './components/ui/UpdateNotification'
+import { openWhatsNew, useWhatsNewStatus, WhatsNew } from './components/whats-new/WhatsNew'
 import { ShortcutHelpOverlay } from './components/ui/ShortcutHelpOverlay'
 import { DiagnosticsOverlay } from './components/ui/DiagnosticsOverlay'
 import { useEventSource } from './hooks/useEventSource'
@@ -67,7 +68,7 @@ import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog, type SettingsSectionId } from './components/settings/SettingsDialog'
 import type { APIResource, TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
-import { kindToPluralWithGroup, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource } from './utils/navigation'
+import { kindToPluralWithGroup, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource, withCrossViewParams } from './utils/navigation'
 import { findSelectedTopologyNode } from './utils/topology-selection'
 import { type OmnibarHandle } from './components/ui/Omnibar'
 import { RadarOmnibar } from './components/ui/RadarOmnibar'
@@ -492,6 +493,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     navigate({ pathname: path, search: newParams.toString() })
   }, [location.search, navigate, takeover, goHost])
 
+  const whatsNewStatus = useWhatsNewStatus()
+
+  const navigateToPath = useCallback((path: string) => {
+    navigate(withCrossViewParams(path, location.search))
+  }, [location.search, navigate])
+
   // The standalone rail expresses intent to leave the full-width investigation
   // workspace. Close it before routing so the destination is immediately visible;
   // docked investigations stay open across views as a persistent side panel.
@@ -777,13 +784,14 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       metadata: { namespace: resource.namespace ?? '', name: resource.name },
     })
     if (gitOpsPath) {
-      const destination = new URL(gitOpsPath, window.location.origin)
-      if (investigationRunID) destination.searchParams.set('ai-run', investigationRunID)
+      const destination = new URL(withCrossViewParams(gitOpsPath, searchParams.toString()), window.location.origin)
+      if (investigationRunID === null) destination.searchParams.delete('ai-run')
+      else if (investigationRunID) destination.searchParams.set('ai-run', investigationRunID)
       navigate(`${destination.pathname}${destination.search}${destination.hash}`)
       return
     }
     navigateToResourceList(resource, investigationRunID)
-  }, [navigate, navigateToHelmRelease, navigateToResourceList])
+  }, [navigate, navigateToHelmRelease, navigateToResourceList, searchParams])
 
   // Collapse the over-list fullscreen back to the drawer = drop ?full=1 (and the
   // resource-scoped ?tab) in place. The button means "collapse THIS to a drawer"
@@ -1732,6 +1740,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           showPinToggle={!railForcedSlim}
           onOpenSettings={() => openSettings()}
           accountSlot={<UserMenu variant="rail" pinned={navRailEffectivePinned} />}
+          whatsNew={whatsNewStatus.available ? { unread: whatsNewStatus.unread, onOpen: openWhatsNew } : undefined}
         />
       )}
       {/* `relative` makes this column the containing block for the absolute
@@ -1833,6 +1842,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             onSetNamespaces={(ns) => { setNamespaces(ns); setActiveNamespace.mutate({ namespaces: ns }) }}
             onToggleTheme={toggleTheme}
             onShowDiagnostics={() => setShowDiagnostics(true)}
+            onShowWhatsNew={whatsNewStatus.available ? openWhatsNew : undefined}
             onOpenResource={(hit) => navigateToResourceList(searchHitToSelectedResource(hit))}
           />
         </div>
@@ -1994,7 +2004,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             fallbackClusterLoadState={showHomeClusterLoadFallback ? clusterLoadState : undefined}
             onNavigateToView={setMainView}
             onNavigateToHelmRelease={navCustomization.embedded ? undefined : navigateToHelmRelease}
-            onNavigateToManagerPath={navCustomization.embedded || takeover.gitops ? undefined : (path) => navigate(path)}
+            onNavigateToManagerPath={navCustomization.embedded || takeover.gitops ? undefined : navigateToPath}
+            onShowWhatsNew={!navCustomization.embedded && whatsNewStatus.available ? openWhatsNew : undefined}
             // Upgrade impact lives under /checks, which a Cloud host takes
             // over wholesale — its fleet pages have no upgrade sub-route, so
             // the version line stays plain text there.
@@ -2435,6 +2446,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
       {/* Update notification — hidden in embedded mode (OSS download nudge). */}
       {!navCustomization.embedded && <UpdateNotification />}
+      {!navCustomization.embedded && <WhatsNew onNavigate={navigateToPath} />}
 
       {/* Bottom Dock for Terminal/Logs */}
       <BottomDock />

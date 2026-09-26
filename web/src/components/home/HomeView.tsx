@@ -52,9 +52,11 @@ interface HomeViewProps {
   onNavigateToUpgradeImpact?: () => void
   onNavigateToHelmRelease?: (namespace: string, release: string) => void
   onNavigateToManagerPath?: (path: string) => void
+  // Present only when release notes exist for this version.
+  onShowWhatsNew?: () => void
 }
 
-export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts, onNavigateToUpgradeImpact, onNavigateToHelmRelease, onNavigateToManagerPath }: HomeViewProps) {
+export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNavigateToView, onNavigateToResourceKind, onNavigateToResource, onNavigateToCerts, onNavigateToUpgradeImpact, onNavigateToHelmRelease, onNavigateToManagerPath, onShowWhatsNew }: HomeViewProps) {
   // The card itself decides whether the cluster has a capacity story
   // (available, softened-denied, or karpenterless-with-managers/groups) and
   // returns null otherwise — the outer gate only excludes states with nothing
@@ -138,9 +140,11 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
         )}
         {/* Row 1: Cluster Health Card (combined health + resource counts) */}
         <ClusterHealthCard
-          radarVersion={deploymentMode === 'in-cluster' && versionInfo ? (
+          radarVersion={versionInfo && deploymentMode !== 'cloud' ? (
             <RadarVersionLine
               version={versionInfo}
+              showUpgrade={deploymentMode === 'in-cluster'}
+              onShowWhatsNew={onShowWhatsNew}
               manager={installationManager}
               managerLoading={installationManagerLoading}
               onNavigateToHelmRelease={onNavigateToHelmRelease}
